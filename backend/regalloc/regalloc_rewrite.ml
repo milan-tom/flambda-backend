@@ -1,4 +1,4 @@
-[@@@ocaml.warning "+a-4-30-40-41-42"]
+[@@@ocaml.warning "+a-4-30-40-41-42-32-60"]
 
 open! Regalloc_utils
 module DLL = Flambda_backend_utils.Doubly_linked_list
@@ -37,6 +37,44 @@ type direction =
   | Load_after_list of Cfg.basic_instruction_list
   | Store_before_list of Cfg.basic_instruction_list
 
+module Optimization_reg () = struct
+  type t = { reg : Reg.t }
+
+  type reg = t
+
+  let of_reg (reg : Reg.t) = { reg }
+
+  let to_reg (t : t) = t.reg
+
+  let cl { reg } = Proc.register_class reg
+
+  module RegOrder = struct
+    type t = reg
+
+    let compare r1 r2 = (to_reg r1).stamp - (to_reg r2).stamp
+  end
+
+  module Set = Set.Make (RegOrder)
+
+  module Tbl = Hashtbl.Make (struct
+    type t = reg
+
+    let equal r1 r2 = Reg.same (to_reg r1) (to_reg r2)
+
+    let hash (r : t) = r.reg.stamp
+  end)
+end
+
+module Inst_temporary = Optimization_reg ()
+
+module Block_temporary = Optimization_reg ()
+
+module Spilled_var = Optimization_reg ()
+
+module Actual_var = Optimization_reg ()
+
+module Unspilled_reg = Optimization_reg ()
+
 (* Applies an optimization on the CFG outputted by [rewrite_gen] having one
    temporary per variable per block rather than one per use of the variable,
    reducing the number of spills and reloads needed for variables used multiple
@@ -58,7 +96,8 @@ type direction =
    that are now redundant (due to being replaced by block temporaries) are
    removed from the list of new instruction temporaries. *)
 let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
-    ~new_inst_temporaries ~new_block_temporaries =
+    spilled_map_external cfg_with_infos ~new_inst_temporaries
+    ~new_block_temporaries =
   (* CR-soon mitom: Avoid cases where optimisation worsens spills and reloads
      due to assigning block temporaries for spilled registers that have live
      ranges interfering with things that have already been register allocated *)
@@ -287,8 +326,8 @@ let rewrite_gen :
             block_insertion := true);
       if !block_rewritten && should_coalesce_temp_spills_and_reloads
       then
-        coalesce_temp_spills_and_reloads block ~new_inst_temporaries
-          ~new_block_temporaries;
+        coalesce_temp_spills_and_reloads block spilled_map cfg_with_infos
+          ~new_inst_temporaries ~new_block_temporaries;
       if Utils.debug
       then (
         Utils.log ~indent:2 "and after:";
