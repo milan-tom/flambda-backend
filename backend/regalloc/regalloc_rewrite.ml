@@ -101,7 +101,6 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
   (* CR-soon mitom: Avoid cases where optimisation worsens spills and reloads
      due to assigning block temporaries for spilled registers that have live
      ranges interfering with things that have already been register allocated *)
-  let removed_inst_temporaries = Reg.Tbl.create 128 in
   let var_to_block_temp = Reg.Tbl.create 8 in
   let replacements = Reg.Tbl.create 8 in
   let last_spill = Reg.Tbl.create 8 in
@@ -137,15 +136,14 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
   then (
     Substitution.apply_block_in_place replacements block;
     Reg.Tbl.iter
-      (fun temp block_temp ->
-        Reg.Tbl.replace removed_inst_temporaries temp ();
-        Reg.Tbl.replace removed_inst_temporaries block_temp ();
+      (fun inst_temp block_temp ->
+        let remove_inst_temporary temp =
+          new_inst_temporaries := Reg.Set.remove temp !new_inst_temporaries
+        in
+        remove_inst_temporary inst_temp;
+        remove_inst_temporary block_temp;
         new_block_temporaries := block_temp :: !new_block_temporaries)
-      replacements);
-  new_inst_temporaries
-    := List.filter
-         ~f:(fun temp -> not (Reg.Tbl.mem removed_inst_temporaries temp))
-         !new_inst_temporaries
+      replacements)
 
 let rewrite_gen :
     type s.
@@ -182,13 +180,13 @@ let rewrite_gen :
         Reg.Tbl.replace spilled_map reg spilled;
         spilled_map)
   in
-  let new_inst_temporaries : Reg.t list ref = ref [] in
+  let new_inst_temporaries : Reg.Set.t ref = ref Reg.Set.empty in
   let new_block_temporaries = ref [] in
   let make_new_temporary ~(move : Move.t) (reg : Reg.t) : Reg.t =
     let res =
       make_temporary ~same_class_and_base_name_as:reg ~name_prefix:"temp"
     in
-    new_inst_temporaries := res :: !new_inst_temporaries;
+    new_inst_temporaries := Reg.Set.add res !new_inst_temporaries;
     if Utils.debug
     then
       Utils.log ~indent:2 "adding temporary %a (to %s %a)" Printmach.reg res
@@ -334,7 +332,9 @@ let rewrite_gen :
         Utils.log_body_and_terminator ~indent:3 block.body block.terminator
           liveness;
         Utils.log ~indent:2 "end"));
-  !new_inst_temporaries, !new_block_temporaries, !block_insertion
+  ( !new_inst_temporaries |> Reg.Set.to_seq |> List.of_seq,
+    !new_block_temporaries,
+    !block_insertion )
 
 (* CR-soon xclerc for xclerc: investigate exactly why this threshold is
    necessary. *)
