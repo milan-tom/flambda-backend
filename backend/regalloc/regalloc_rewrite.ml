@@ -98,9 +98,6 @@ module Unspilled_reg = Optimization_reg ()
 let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     spilled_map_external cfg_with_infos ~new_inst_temporaries
     ~new_block_temporaries =
-  (* CR-soon mitom: Avoid cases where optimisation worsens spills and reloads
-     due to assigning block temporaries for spilled registers that have live
-     ranges interfering with things that have already been register allocated *)
   let var_to_block_temp = Reg.Tbl.create 8 in
   let replacements = Reg.Tbl.create 8 in
   let last_spill = Reg.Tbl.create 8 in
