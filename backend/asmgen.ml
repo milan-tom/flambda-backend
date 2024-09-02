@@ -260,6 +260,8 @@ let count_spills_reloads (block : Cfg.basic_block) =
   in
   DLL.fold_left ~f ~init:(0, 0) block.body
 
+let count_num_instructions (block : Cfg.basic_block) = DLL.length block.body
+
 (** Returns all CFG counters that work on a single block and are summative over the
     blocks. *)
 let cfg_block_counters block =
@@ -270,6 +272,7 @@ let cfg_block_counters block =
   |> Profile.Counters.set "block_duplicate_reload" dup_reloads
   |> Profile.Counters.set "spill" spills
   |> Profile.Counters.set "reload" reloads
+  |> Profile.Counters.set "num_instructions" (count_num_instructions block)
 
 (** Returns all CFG counters that require the whole CFG to produce a count. *)
 let whole_cfg_counters (_ : Cfg.t) = Profile.Counters.create ()

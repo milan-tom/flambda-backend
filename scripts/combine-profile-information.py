@@ -12,6 +12,7 @@ from typing import Dict, Iterable, Iterator, List, Tuple, Union
 parser = ArgumentParser(description="Combine multiple profile CSVs into one")
 parser.add_argument("dump_dir", help="The folder the profile CSVs have been dumped in")
 parser.add_argument("-o", "--summary_path", help="The path to store the summary CSV")
+parser.add_argument("-p", "--pass_name", help="The pass to get counter information from")
 
 args = parser.parse_args()
 
@@ -22,6 +23,8 @@ if not DUMP_DIR.exists():
 if args.summary_path is None:
     args.summary_path = DUMP_DIR.parent / "summary.csv"
 SUMMARY_PATH = Path(args.summary_path)
+
+PASS_NAME = args.pass_name
 
 CsvRow = Dict[str, str]
 CsvRows = List[CsvRow]
@@ -102,8 +105,14 @@ def row_summary(row: CsvRow) -> SummaryRow:
     return {k: v for k, v in full_summary.items() if k in SUMMARY_FIELD_NAMES}
 
 
+def row_pass(row):
+    return row[PRIMARY_KEY].split("/")[-1]
+
+
 def csv_to_summaries(rows: CsvRows) -> Iterable[SummaryRow]:
     counter_rows = [row for row in rows if row["counters"]]
+    if PASS_NAME is not None:
+        counter_rows = [row for row in counter_rows if PASS_NAME in row[PRIMARY_KEY]]
     return map(row_summary, counter_rows)
 
 
