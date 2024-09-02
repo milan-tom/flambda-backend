@@ -96,12 +96,6 @@ module Unspilled_reg = Optimization_reg ()
 let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     spilled_map_external cfg_with_infos ~new_inst_temporaries
     ~new_block_temporaries =
-  (* CR-soon mitom: Avoid cases where optimisation worsens spills and reloads
-     due to assigning block temporaries for spilled registers that have live
-     ranges interfering with things that have already been register allocated *)
-  let remove_inst_temporary temp =
-    new_inst_temporaries := Reg.Set.remove temp !new_inst_temporaries
-  in
   let (var_to_block_temp : Block_temporary.t Actual_var.Tbl.t) =
     Actual_var.Tbl.create 8
   in
@@ -275,13 +269,16 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
              Unspilled_reg.Set.add unspilled existing)))
       spilled_to_spilled_things_crossed
   in
+  let substitution = Reg.Tbl.create 8 in
   let make_block_temp spilled =
     let var = Spilled_var.Tbl.find spilled_map spilled in
-    let block_temporary = Actual_var.Tbl.find var_to_block_temp var in
-    Block_temporary.Tbl.find_opt things_to_replace block_temporary
+    let block_temp = Actual_var.Tbl.find var_to_block_temp var in
+    Block_temporary.Tbl.find_opt things_to_replace block_temp
     |> Option.value ~default:[]
-    |> List.iter ~f:(fun to_replace ->
-           Inst_temporary.Tbl.add replacements to_replace block_temporary);
+    |> List.iter ~f:(fun inst_temp ->
+           Reg.Tbl.add substitution
+             (Inst_temporary.to_reg inst_temp)
+             (Block_temporary.to_reg block_temp));
     List.iter ~f:DLL.delete_curr
       (Actual_var.Tbl.find_opt instrs_to_remove var |> Option.value ~default:[])
   in
@@ -313,23 +310,18 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     | None -> ()
   in
   pick_block_temporaries ();
-  if Inst_temporary.Tbl.length replacements <> 0
+  if Reg.Tbl.length substitution <> 0
   then (
-    let (substitution : Reg.t Reg.Tbl.t) = Reg.Tbl.create 8 in
-    Inst_temporary.Tbl.iter
-      (fun to_replace replace_with ->
-        Reg.Tbl.add substitution
-          (Inst_temporary.to_reg to_replace)
-          (Block_temporary.to_reg replace_with))
-      replacements;
     Substitution.apply_block_in_place substitution block;
-    Inst_temporary.Tbl.iter
-      (fun (temp : Inst_temporary.t) block_temp ->
-        remove_inst_temporary (temp |> Inst_temporary.to_reg);
-        remove_inst_temporary (block_temp |> Block_temporary.to_reg);
-        new_block_temporaries
-          := (block_temp |> Block_temporary.to_reg) :: !new_block_temporaries)
-      (replacements : Block_temporary.t Inst_temporary.Tbl.t))
+    Reg.Tbl.iter
+      (fun inst_temp block_temp ->
+        let remove_inst_temporary temp =
+          new_inst_temporaries := Reg.Set.remove temp !new_inst_temporaries
+        in
+        remove_inst_temporary inst_temp;
+        remove_inst_temporary block_temp;
+        new_block_temporaries := block_temp :: !new_block_temporaries)
+      substitution)
 
 let rewrite_gen :
     type s.
