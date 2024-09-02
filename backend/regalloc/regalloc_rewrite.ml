@@ -102,7 +102,9 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
   let (things_to_replace : Inst_temporary.t list Block_temporary.Tbl.t) =
     Block_temporary.Tbl.create 8
   in
-  let last_spill = Reg.Tbl.create 8 in
+  let (last_spill : Cfg.basic Cfg.instruction DLL.cell Actual_var.Tbl.t) =
+    Actual_var.Tbl.create 8
+  in
   (* CR mitom: Use pending substitutions *)
   let replace (to_replace : Inst_temporary.t) (replace_with : Block_temporary.t)
       =
@@ -129,14 +131,14 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
         replace (Inst_temporary.of_reg temp) (Block_temporary.of_reg block_temp)
       )
     | Op Spill -> (
-      let var = inst.res.(0) in
+      let var = Actual_var.of_reg inst.res.(0) in
       let temp = inst.arg.(0) in
-      (match Reg.Tbl.find_opt last_spill var with
+      (match Actual_var.Tbl.find_opt last_spill var with
       | None -> ()
       | Some prev_inst_cell -> DLL.delete_curr prev_inst_cell);
-      Reg.Tbl.replace last_spill var inst_cell;
-      match Reg.Tbl.find_opt var_to_block_temp var with
-      | None -> Reg.Tbl.add var_to_block_temp var temp
+      Actual_var.Tbl.replace last_spill var inst_cell;
+      match Reg.Tbl.find_opt var_to_block_temp (Actual_var.to_reg var) with
+      | None -> Reg.Tbl.add var_to_block_temp (Actual_var.to_reg var) temp
       | Some block_temp ->
         replace (Inst_temporary.of_reg temp) (Block_temporary.of_reg block_temp)
       )
