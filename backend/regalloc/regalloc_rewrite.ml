@@ -99,14 +99,21 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     spilled_map_external cfg_with_infos ~new_inst_temporaries
     ~new_block_temporaries =
   let var_to_block_temp = Reg.Tbl.create 8 in
-  let (things_to_replace : Reg.t list Reg.Tbl.t) = Reg.Tbl.create 8 in
+  let (things_to_replace : Inst_temporary.t list Block_temporary.Tbl.t) =
+    Block_temporary.Tbl.create 8
+  in
   let last_spill = Reg.Tbl.create 8 in
-  let replace to_replace replace_with =
-    if not (Reg.same to_replace replace_with)
+  (* CR mitom: Use pending substitutions *)
+  let replace (to_replace : Inst_temporary.t) (replace_with : Block_temporary.t)
+      =
+    if not
+         (Reg.same
+            (Inst_temporary.to_reg to_replace)
+            (Block_temporary.to_reg replace_with))
     then
-      Reg.Tbl.replace things_to_replace replace_with
+      Block_temporary.Tbl.replace things_to_replace replace_with
         (to_replace
-        :: (Reg.Tbl.find_opt things_to_replace replace_with
+        :: (Block_temporary.Tbl.find_opt things_to_replace replace_with
            |> Option.value ~default:[]))
   in
   let update_info_using_inst (inst_cell : Cfg.basic Cfg.instruction DLL.cell) =
@@ -119,7 +126,8 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       | None -> Reg.Tbl.add var_to_block_temp var temp
       | Some block_temp ->
         DLL.delete_curr inst_cell;
-        replace temp block_temp)
+        replace (Inst_temporary.of_reg temp) (Block_temporary.of_reg block_temp)
+      )
     | Op Spill -> (
       let var = inst.res.(0) in
       let temp = inst.arg.(0) in
@@ -129,15 +137,20 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       Reg.Tbl.replace last_spill var inst_cell;
       match Reg.Tbl.find_opt var_to_block_temp var with
       | None -> Reg.Tbl.add var_to_block_temp var temp
-      | Some block_temp -> replace temp block_temp)
+      | Some block_temp ->
+        replace (Inst_temporary.of_reg temp) (Block_temporary.of_reg block_temp)
+      )
     | _ -> ()
   in
   DLL.iter_cell block.body ~f:update_info_using_inst;
   let substitution = Reg.Tbl.create 8 in
-  Reg.Tbl.iter
+  Block_temporary.Tbl.iter
     (fun block_temp inst_temps ->
       List.iter
-        ~f:(fun inst_temp -> Reg.Tbl.replace substitution inst_temp block_temp)
+        ~f:(fun inst_temp ->
+          Reg.Tbl.replace substitution
+            (Inst_temporary.to_reg inst_temp)
+            (Block_temporary.to_reg block_temp))
         inst_temps)
     things_to_replace;
   if Reg.Tbl.length substitution <> 0
