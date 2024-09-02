@@ -249,7 +249,7 @@ let rewrite_gen :
                temporary is spilled, stack operands will apply to it in the next
                round in the same way it would have done to the original
                variable. *)
-            if should_coalesce_temp_spills_and_reloads
+            if true
                || Regalloc_stack_operands.basic spilled_map instr
                   = May_still_have_spilled_registers
             then (
@@ -263,7 +263,7 @@ let rewrite_gen :
       then
         (* CR-soon mitom: Same issue as short circuiting in basic instruction
            rewriting *)
-        if should_coalesce_temp_spills_and_reloads
+        if true
            || Regalloc_stack_operands.terminator spilled_map block.terminator
               = May_still_have_spilled_registers
         then (
