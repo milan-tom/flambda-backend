@@ -46,6 +46,8 @@ module Optimization_reg () = struct
 
   let to_reg (t : t) = t.reg
 
+  let cl { reg } = Proc.register_class reg
+
   module RegOrder = struct
     type t = reg
 
@@ -128,8 +130,6 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     in
     Actual_var.Tbl.replace instrs_to_remove var (instr_cell :: existing)
   in
-  (* CR mitom: Use reg classes *)
-  let max_reg_limit = Proc.num_available_registers.(0) in
   let (spilled_map : Actual_var.t Spilled_var.Tbl.t) =
     Spilled_var.Tbl.create 8
   in
@@ -215,19 +215,27 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
         |> Unspilled_reg.Set.of_seq
       in
       let update_live (original_var : Spilled_var.t) =
-        let filter_self = Spilled_var.Set.remove original_var in
         let update_existing1 (tbl : Spilled_var.Set.t Spilled_var.Tbl.t) to_add
             =
+          let remove_self = Spilled_var.Set.remove original_var in
+          let remove_diff_class =
+            Spilled_var.Set.filter (fun var ->
+                Spilled_var.cl original_var = Spilled_var.cl var)
+          in
           Spilled_var.Tbl.find_opt tbl original_var
           |> Option.value ~default:Spilled_var.Set.empty
-          |> Spilled_var.Set.union (filter_self to_add)
+          |> Spilled_var.Set.union (to_add |> remove_self |> remove_diff_class)
           |> Spilled_var.Tbl.replace tbl original_var
         in
         let update_existing2 (tbl : Unspilled_reg.Set.t Spilled_var.Tbl.t)
             to_add =
+          let remove_diff_class =
+            Unspilled_reg.Set.filter (fun unspilled ->
+                Spilled_var.cl original_var = Unspilled_reg.cl unspilled)
+          in
           Spilled_var.Tbl.find_opt tbl original_var
           |> Option.value ~default:Unspilled_reg.Set.empty
-          |> Unspilled_reg.Set.union to_add
+          |> Unspilled_reg.Set.union (remove_diff_class to_add)
           |> Spilled_var.Tbl.replace tbl original_var
         in
         if Spilled_var.Tbl.mem spilled_map original_var
@@ -241,7 +249,6 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
   in
   DLL.iter_cell block.body ~f:update_info_using_inst;
   DLL.iter_cell block.body ~f:update_live_info_using_inst;
-  let replacements = Inst_temporary.Tbl.create 8 in
   let convert_spilled_to_unspilled (spilled : Spilled_var.t) =
     (* Spilled_var.Tbl.find_opt spilled_to_spilled_things_crossed spilled |>
        Option.value ~default:Spilled_var.Set.empty |> Spilled_var.Set.iter (fun
@@ -283,13 +290,14 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       (Actual_var.Tbl.find_opt instrs_to_remove var |> Option.value ~default:[])
   in
   let rec pick_block_temporaries () =
-    let eligible unspilled_things_crossed =
-      Unspilled_reg.Set.cardinal unspilled_things_crossed < max_reg_limit
+    let eligible spilled unspilled_things_crossed =
+      Unspilled_reg.Set.cardinal unspilled_things_crossed
+      < Proc.num_available_registers.(Spilled_var.cl spilled)
     in
     let best =
       Spilled_var.Tbl.fold
         (fun spilled unspilled_things_crossed acc ->
-          if eligible unspilled_things_crossed
+          if eligible spilled unspilled_things_crossed
           then
             let curr_score =
               Actual_var.Tbl.find_opt instrs_to_remove
