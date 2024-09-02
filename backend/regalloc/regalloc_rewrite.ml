@@ -99,11 +99,15 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     spilled_map_external cfg_with_infos ~new_inst_temporaries
     ~new_block_temporaries =
   let var_to_block_temp = Reg.Tbl.create 8 in
-  let substitution = Reg.Tbl.create 8 in
+  let (things_to_replace : Reg.t list Reg.Tbl.t) = Reg.Tbl.create 8 in
   let last_spill = Reg.Tbl.create 8 in
   let replace to_replace replace_with =
     if not (Reg.same to_replace replace_with)
-    then Reg.Tbl.add substitution to_replace replace_with
+    then
+      Reg.Tbl.replace things_to_replace replace_with
+        (to_replace
+        :: (Reg.Tbl.find_opt things_to_replace replace_with
+           |> Option.value ~default:[]))
   in
   let update_info_using_inst (inst_cell : Cfg.basic Cfg.instruction DLL.cell) =
     let inst = DLL.value inst_cell in
@@ -129,6 +133,13 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     | _ -> ()
   in
   DLL.iter_cell block.body ~f:update_info_using_inst;
+  let substitution = Reg.Tbl.create 8 in
+  Reg.Tbl.iter
+    (fun block_temp inst_temps ->
+      List.iter
+        ~f:(fun inst_temp -> Reg.Tbl.replace substitution inst_temp block_temp)
+        inst_temps)
+    things_to_replace;
   if Reg.Tbl.length substitution <> 0
   then (
     Substitution.apply_block_in_place substitution block;
