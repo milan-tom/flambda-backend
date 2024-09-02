@@ -276,20 +276,22 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       spilled_to_spilled_things_crossed
   in
   let rec pick_block_temporaries acc =
+    let eligible unspilled_things_crossed =
+      Unspilled_reg.Set.cardinal unspilled_things_crossed < max_reg_limit
+    in
     let best =
       Spilled_var.Tbl.fold
         (fun spilled unspilled_things_crossed acc ->
-          let num_unspilled_crossed =
-            Unspilled_reg.Set.cardinal unspilled_things_crossed
-          in
-          if num_unspilled_crossed < max_reg_limit
+          if eligible unspilled_things_crossed
           then
+            let curr_score =
+              Actual_var.Tbl.find_opt instrs_to_remove
+                (Spilled_var.Tbl.find spilled_map spilled)
+              |> Option.value ~default:[] |> List.length
+            in
             match acc with
-            | None -> Some (spilled, num_unspilled_crossed)
-            | Some (_, prev_unspilled_things_crossed) ->
-              if num_unspilled_crossed < prev_unspilled_things_crossed
-              then Some (spilled, num_unspilled_crossed)
-              else acc
+            | Some (_, prev_score) when curr_score <= prev_score -> acc
+            | _ -> Some (spilled, curr_score)
           else acc)
         spilled_to_unspilled_things_crossed None
     in
@@ -339,7 +341,6 @@ let rewrite_gen :
     Reg.t list * Reg.t list * bool =
  fun (module State : State with type t = s) (module Utils) state cfg_with_infos
      ~spilled_nodes ~block_temporaries ->
-  (* Format.printf "%s \n%!" "Started rewriting"; *)
   let should_coalesce_temp_spills_and_reloads =
     Lazy.force Regalloc_utils.block_temporaries && block_temporaries
   in
