@@ -98,7 +98,9 @@ module Unspilled_reg = Optimization_reg ()
 let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     spilled_map_external cfg_with_infos ~new_inst_temporaries
     ~new_block_temporaries =
-  let var_to_block_temp = Reg.Tbl.create 8 in
+  let (var_to_block_temp : Block_temporary.t Actual_var.Tbl.t) =
+    Actual_var.Tbl.create 8
+  in
   let (things_to_replace : Inst_temporary.t list Block_temporary.Tbl.t) =
     Block_temporary.Tbl.create 8
   in
@@ -118,30 +120,30 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
         :: (Block_temporary.Tbl.find_opt things_to_replace replace_with
            |> Option.value ~default:[]))
   in
+  let promote_to_block inst_temp =
+    inst_temp |> Inst_temporary.to_reg |> Block_temporary.of_reg
+  in
   let update_info_using_inst (inst_cell : Cfg.basic Cfg.instruction DLL.cell) =
     let inst = DLL.value inst_cell in
     match inst.desc with
     | Op Reload -> (
-      let var = inst.arg.(0) in
-      let temp = inst.res.(0) in
-      match Reg.Tbl.find_opt var_to_block_temp var with
-      | None -> Reg.Tbl.add var_to_block_temp var temp
+      let var = Actual_var.of_reg inst.arg.(0) in
+      let temp = Inst_temporary.of_reg inst.res.(0) in
+      match Actual_var.Tbl.find_opt var_to_block_temp var with
+      | None -> Actual_var.Tbl.add var_to_block_temp var (promote_to_block temp)
       | Some block_temp ->
         DLL.delete_curr inst_cell;
-        replace (Inst_temporary.of_reg temp) (Block_temporary.of_reg block_temp)
-      )
+        replace temp block_temp)
     | Op Spill -> (
       let var = Actual_var.of_reg inst.res.(0) in
-      let temp = inst.arg.(0) in
+      let temp = Inst_temporary.of_reg inst.arg.(0) in
       (match Actual_var.Tbl.find_opt last_spill var with
       | None -> ()
       | Some prev_inst_cell -> DLL.delete_curr prev_inst_cell);
       Actual_var.Tbl.replace last_spill var inst_cell;
-      match Reg.Tbl.find_opt var_to_block_temp (Actual_var.to_reg var) with
-      | None -> Reg.Tbl.add var_to_block_temp (Actual_var.to_reg var) temp
-      | Some block_temp ->
-        replace (Inst_temporary.of_reg temp) (Block_temporary.of_reg block_temp)
-      )
+      match Actual_var.Tbl.find_opt var_to_block_temp var with
+      | None -> Actual_var.Tbl.add var_to_block_temp var (promote_to_block temp)
+      | Some block_temp -> replace temp block_temp)
     | _ -> ()
   in
   DLL.iter_cell block.body ~f:update_info_using_inst;
