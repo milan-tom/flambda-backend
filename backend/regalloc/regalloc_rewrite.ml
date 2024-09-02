@@ -297,7 +297,7 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     let best =
       Spilled_var.Tbl.fold
         (fun spilled unspilled_things_crossed acc ->
-          if eligible spilled unspilled_things_crossed
+          if true || eligible spilled unspilled_things_crossed
           then
             let curr_score =
               Actual_var.Tbl.find_opt instrs_to_remove
