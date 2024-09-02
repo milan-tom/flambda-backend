@@ -275,7 +275,17 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
              Unspilled_reg.Set.add unspilled existing)))
       spilled_to_spilled_things_crossed
   in
-  let rec pick_block_temporaries acc =
+  let make_block_temp spilled =
+    let var = Spilled_var.Tbl.find spilled_map spilled in
+    let block_temporary = Actual_var.Tbl.find var_to_block_temp var in
+    Block_temporary.Tbl.find_opt things_to_replace block_temporary
+    |> Option.value ~default:[]
+    |> List.iter ~f:(fun to_replace ->
+           Inst_temporary.Tbl.add replacements to_replace block_temporary);
+    List.iter ~f:DLL.delete_curr
+      (Actual_var.Tbl.find_opt instrs_to_remove var |> Option.value ~default:[])
+  in
+  let rec pick_block_temporaries () =
     let eligible unspilled_things_crossed =
       Unspilled_reg.Set.cardinal unspilled_things_crossed < max_reg_limit
     in
@@ -296,22 +306,13 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
         spilled_to_unspilled_things_crossed None
     in
     match best with
-    | None -> acc
     | Some (spilled, _) ->
       convert_spilled_to_unspilled spilled;
-      let var = Spilled_var.Tbl.find spilled_map spilled in
-      let block_temp = Actual_var.Tbl.find var_to_block_temp var in
-      pick_block_temporaries ((block_temp, var) :: acc)
+      make_block_temp spilled;
+      pick_block_temporaries ()
+    | None -> ()
   in
-  let make_block_temp (block_temporary, var) =
-    Block_temporary.Tbl.find_opt things_to_replace block_temporary
-    |> Option.value ~default:[]
-    |> List.iter ~f:(fun to_replace ->
-           Inst_temporary.Tbl.add replacements to_replace block_temporary);
-    List.iter ~f:DLL.delete_curr
-      (Actual_var.Tbl.find_opt instrs_to_remove var |> Option.value ~default:[])
-  in
-  pick_block_temporaries [] |> List.iter ~f:make_block_temp;
+  pick_block_temporaries ();
   if Inst_temporary.Tbl.length replacements <> 0
   then (
     let (substitution : Reg.t Reg.Tbl.t) = Reg.Tbl.create 8 in
