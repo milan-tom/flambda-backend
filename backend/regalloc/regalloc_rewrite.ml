@@ -164,22 +164,21 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       Block_temporary.Tbl.add block_temp_to_var block_temp var)
     var_to_block_temp;
   let make_block_temp var =
+    let block_temp = Actual_var.Tbl.find var_to_block_temp var in
     Actual_var.Tbl.find_opt instrs_to_remove var
     |> Option.value ~default:[]
-    |> List.iter ~f:DLL.delete_curr
+    |> List.iter ~f:DLL.delete_curr;
+    Block_temporary.Tbl.find_opt things_to_replace block_temp
+    |> Option.value ~default:[]
+    |> List.iter ~f:(fun inst_temp ->
+           Reg.Tbl.replace substitution
+             (Inst_temporary.to_reg inst_temp)
+             (Block_temporary.to_reg block_temp))
   in
   let pick_block_temps () =
-    instrs_to_remove |> Actual_var.Tbl.to_seq_keys |> List.of_seq in
+    instrs_to_remove |> Actual_var.Tbl.to_seq_keys |> List.of_seq
+  in
   pick_block_temps () |> List.iter ~f:make_block_temp;
-  Block_temporary.Tbl.iter
-    (fun block_temp inst_temps ->
-      List.iter
-        ~f:(fun inst_temp ->
-          Reg.Tbl.replace substitution
-            (Inst_temporary.to_reg inst_temp)
-            (Block_temporary.to_reg block_temp))
-        inst_temps)
-    things_to_replace;
   if Reg.Tbl.length substitution <> 0
   then (
     Substitution.apply_block_in_place substitution block;
