@@ -120,6 +120,16 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
         :: (Block_temporary.Tbl.find_opt things_to_replace replace_with
            |> Option.value ~default:[]))
   in
+  let (instrs_to_remove
+        : Cfg.basic Cfg.instruction DLL.cell list Actual_var.Tbl.t) =
+    Actual_var.Tbl.create 8
+  in
+  let remove_instr var instr_cell =
+    let existing =
+      Actual_var.Tbl.find_opt instrs_to_remove var |> Option.value ~default:[]
+    in
+    Actual_var.Tbl.replace instrs_to_remove var (instr_cell :: existing)
+  in
   let promote_to_block inst_temp =
     inst_temp |> Inst_temporary.to_reg |> Block_temporary.of_reg
   in
@@ -132,14 +142,14 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       match Actual_var.Tbl.find_opt var_to_block_temp var with
       | None -> Actual_var.Tbl.add var_to_block_temp var (promote_to_block temp)
       | Some block_temp ->
-        DLL.delete_curr inst_cell;
+        remove_instr var inst_cell;
         replace temp block_temp)
     | Op Spill -> (
       let var = Actual_var.of_reg inst.res.(0) in
       let temp = Inst_temporary.of_reg inst.arg.(0) in
       (match Actual_var.Tbl.find_opt last_spill var with
       | None -> ()
-      | Some prev_inst_cell -> DLL.delete_curr prev_inst_cell);
+      | Some prev_inst_cell -> remove_instr var prev_inst_cell);
       Actual_var.Tbl.replace last_spill var inst_cell;
       match Actual_var.Tbl.find_opt var_to_block_temp var with
       | None -> Actual_var.Tbl.add var_to_block_temp var (promote_to_block temp)
@@ -148,6 +158,14 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
   in
   DLL.iter_cell block.body ~f:update_info_using_inst;
   let substitution = Reg.Tbl.create 8 in
+  let block_temp_to_var = Block_temporary.Tbl.create 8 in
+  Actual_var.Tbl.iter
+    (fun var block_temp ->
+      Block_temporary.Tbl.add block_temp_to_var block_temp var)
+    var_to_block_temp;
+  Actual_var.Tbl.iter
+    (fun var instrs -> List.iter ~f:DLL.delete_curr instrs)
+    instrs_to_remove;
   Block_temporary.Tbl.iter
     (fun block_temp inst_temps ->
       List.iter
