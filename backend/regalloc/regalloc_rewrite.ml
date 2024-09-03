@@ -168,7 +168,9 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     |> Option.value ~default:[]
     |> List.iter ~f:DLL.delete_curr
   in
-  Actual_var.Tbl.iter (fun var _ -> make_block_temp var) instrs_to_remove;
+  let pick_block_temps () =
+    instrs_to_remove |> Actual_var.Tbl.to_seq_keys |> List.of_seq in
+  pick_block_temps () |> List.iter ~f:make_block_temp;
   Block_temporary.Tbl.iter
     (fun block_temp inst_temps ->
       List.iter
