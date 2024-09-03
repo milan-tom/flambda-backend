@@ -1,8 +1,8 @@
 set -e -u -o pipefail
 
-original=false
-main=false
-latest=true
+original=true
+main=true
+latest=false
 
 file=true
 func=false
