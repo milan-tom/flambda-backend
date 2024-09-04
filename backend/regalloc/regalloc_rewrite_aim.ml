@@ -1,4 +1,4 @@
-[@@@ocaml.warning "+a-4-30-40-41-42-32-60-27"]
+[@@@ocaml.warning "+a-4-30-40-41-42"]
 
 open! Regalloc_utils
 module DLL = Flambda_backend_utils.Doubly_linked_list
@@ -151,7 +151,6 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       =
     Spilled_var.Tbl.create 8
   in
-  let temp_to_var = Inst_temporary.Tbl.create 8 in
   let promote_to_block inst_temp =
     inst_temp |> Inst_temporary.to_reg |> Block_temporary.of_reg
   in
@@ -161,7 +160,11 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     | Op Reload -> (
       let var = Actual_var.of_reg inst.arg.(0) in
       let temp = Inst_temporary.of_reg inst.res.(0) in
-      Inst_temporary.Tbl.add temp_to_var temp var;
+      if not (Actual_var.Tbl.mem actual_to_spilled var)
+      then (
+      let var_as_spilled = var |> Actual_var.to_reg |> Spilled_var.of_reg in
+        Spilled_var.Tbl.replace spilled_map var_as_spilled var;
+        Actual_var.Tbl.replace actual_to_spilled var var_as_spilled);
       match Actual_var.Tbl.find_opt var_to_block_temp var with
       | None -> Actual_var.Tbl.add var_to_block_temp var (promote_to_block temp)
       | Some block_temp ->
@@ -170,7 +173,11 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     | Op Spill -> (
       let var = Actual_var.of_reg inst.res.(0) in
       let temp = Inst_temporary.of_reg inst.arg.(0) in
-      Inst_temporary.Tbl.add temp_to_var temp var;
+      if not (Actual_var.Tbl.mem actual_to_spilled var)
+        then (
+          let var_as_spilled = var |> Actual_var.to_reg |> Spilled_var.of_reg in
+          Spilled_var.Tbl.replace spilled_map var_as_spilled var;
+          Actual_var.Tbl.replace actual_to_spilled var var_as_spilled);
       (match Actual_var.Tbl.find_opt last_spill var with
       | None -> ()
       | Some prev_inst_cell -> remove_instr var prev_inst_cell);
@@ -293,20 +300,22 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     let eligible spilled unspilled_things_crossed =
       Unspilled_reg.Set.cardinal unspilled_things_crossed
       < Proc.num_available_registers.(Spilled_var.cl spilled)
+      || true
+    in
+    let score spilled_var =
+      Actual_var.Tbl.find_opt instrs_to_remove
+        (Spilled_var.Tbl.find spilled_map spilled_var)
+      |> Option.value ~default:[] |> List.length
     in
     let best =
       Spilled_var.Tbl.fold
-        (fun spilled unspilled_things_crossed acc ->
-          if true || eligible spilled unspilled_things_crossed
+        (fun spilled_var unspilled_things_crossed acc ->
+          if eligible spilled_var unspilled_things_crossed
           then
-            let curr_score =
-              Actual_var.Tbl.find_opt instrs_to_remove
-                (Spilled_var.Tbl.find spilled_map spilled)
-              |> Option.value ~default:[] |> List.length
-            in
+            let curr_score = score spilled_var in
             match acc with
             | Some (_, prev_score) when curr_score <= prev_score -> acc
-            | _ -> Some (spilled, curr_score)
+            | _ -> Some (spilled_var, curr_score)
           else acc)
         spilled_to_unspilled_things_crossed None
     in
