@@ -133,29 +133,6 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
   let promote_to_block inst_temp =
     inst_temp |> Inst_temporary.to_reg |> Block_temporary.of_reg
   in
-  let update_info_using_inst (inst_cell : Cfg.basic Cfg.instruction DLL.cell) =
-    let inst = DLL.value inst_cell in
-    match inst.desc with
-    | Op Reload -> (
-      let var = Actual_var.of_reg inst.arg.(0) in
-      let temp = Inst_temporary.of_reg inst.res.(0) in
-      match Actual_var.Tbl.find_opt var_to_block_temp var with
-      | None -> Actual_var.Tbl.add var_to_block_temp var (promote_to_block temp)
-      | Some block_temp ->
-        remove_instr var inst_cell;
-        replace temp block_temp)
-    | Op Spill -> (
-      let var = Actual_var.of_reg inst.res.(0) in
-      let temp = Inst_temporary.of_reg inst.arg.(0) in
-      (match Actual_var.Tbl.find_opt last_spill var with
-      | None -> ()
-      | Some prev_inst_cell -> remove_instr var prev_inst_cell);
-      Actual_var.Tbl.replace last_spill var inst_cell;
-      match Actual_var.Tbl.find_opt var_to_block_temp var with
-      | None -> Actual_var.Tbl.add var_to_block_temp var (promote_to_block temp)
-      | Some block_temp -> replace temp block_temp)
-    | _ -> ()
-  in
   let (spilled_map : Actual_var.t Spilled_var.Tbl.t) =
     Spilled_var.Tbl.create 8
   in
@@ -170,6 +147,40 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     |> Seq.map (fun (k, v) -> v, k)
     |> Actual_var.Tbl.of_seq
   in
+  let update_info_using_inst (inst_cell : Cfg.basic Cfg.instruction DLL.cell) =
+    let inst = DLL.value inst_cell in
+    match inst.desc with
+    | Op Reload -> (
+      let var = Actual_var.of_reg inst.arg.(0) in
+      let temp = Inst_temporary.of_reg inst.res.(0) in
+      if not (Actual_var.Tbl.mem actual_to_spilled var)
+      then (
+        let var_as_spilled = var |> Actual_var.to_reg |> Spilled_var.of_reg in
+        Spilled_var.Tbl.replace spilled_map var_as_spilled var;
+        Actual_var.Tbl.replace actual_to_spilled var var_as_spilled);
+      match Actual_var.Tbl.find_opt var_to_block_temp var with
+      | None -> Actual_var.Tbl.add var_to_block_temp var (promote_to_block temp)
+      | Some block_temp ->
+        remove_instr var inst_cell;
+        replace temp block_temp)
+    | Op Spill -> (
+      let var = Actual_var.of_reg inst.res.(0) in
+      let temp = Inst_temporary.of_reg inst.arg.(0) in
+      if not (Actual_var.Tbl.mem actual_to_spilled var)
+      then (
+        let var_as_spilled = var |> Actual_var.to_reg |> Spilled_var.of_reg in
+        Spilled_var.Tbl.replace spilled_map var_as_spilled var;
+        Actual_var.Tbl.replace actual_to_spilled var var_as_spilled);
+      (match Actual_var.Tbl.find_opt last_spill var with
+      | None -> ()
+      | Some prev_inst_cell -> remove_instr var prev_inst_cell);
+      Actual_var.Tbl.replace last_spill var inst_cell;
+      match Actual_var.Tbl.find_opt var_to_block_temp var with
+      | None -> Actual_var.Tbl.add var_to_block_temp var (promote_to_block temp)
+      | Some block_temp -> replace temp block_temp)
+    | _ -> ()
+  in
+  DLL.iter_cell block.body ~f:update_info_using_inst;
   let (spilled_to_unspilled_things_crossed
         : Unspilled_reg.Set.t Spilled_var.Tbl.t) =
     Spilled_var.Tbl.create 8
@@ -178,6 +189,12 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       =
     Spilled_var.Tbl.create 8
   in
+  let to_be_seen =
+    var_to_block_temp |> Actual_var.Tbl.to_seq_keys
+    |> Seq.map (Actual_var.Tbl.find actual_to_spilled)
+    |> Spilled_var.Set.of_seq
+  in
+  let seen = ref Spilled_var.Set.empty in
   let update_live_info_using_inst
       (inst_cell : Cfg.basic Cfg.instruction DLL.cell) =
     let inst = DLL.value inst_cell in
@@ -188,16 +205,74 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
         Cfg_with_infos.liveness_find cfg_with_infos inst.id
       in
       let live = Reg.Set.union liveness_domain.before liveness_domain.across in
-      ()
+      let spilled_things_live =
+        Spilled_var.Set.filter
+          (Spilled_var.Tbl.mem spilled_map)
+          (live |> Reg.Set.to_seq |> Seq.map Spilled_var.of_reg
+         |> Spilled_var.Set.of_seq)
+      in
+      seen := Spilled_var.Set.union !seen spilled_things_live;
+      let spilled_things_from_this_block_live =
+        Spilled_var.Set.filter
+          (fun (original_var : Spilled_var.t) ->
+            let (actual : Actual_var.t) =
+              match Spilled_var.Tbl.find_opt spilled_map original_var with
+              | Some x -> x
+              | None -> original_var |> Spilled_var.to_reg |> Actual_var.of_reg
+            in
+            Actual_var.Tbl.mem var_to_block_temp actual)
+          spilled_things_live
+      in
+      let (unspilled_things_live : Unspilled_reg.Set.t) =
+        Spilled_var.Set.to_seq spilled_things_live
+        |> Seq.map Spilled_var.to_reg |> Reg.Set.of_seq |> Reg.Set.diff live
+        |> Reg.Set.to_seq
+        |> Seq.map Unspilled_reg.of_reg
+        |> Unspilled_reg.Set.of_seq
+      in
+      let update_live (original_var : Spilled_var.t) =
+        let update_existing1 (tbl : Spilled_var.Set.t Spilled_var.Tbl.t) to_add
+            =
+          let remove_self = Spilled_var.Set.remove original_var in
+          let remove_diff_class =
+            Spilled_var.Set.filter (fun var ->
+                Spilled_var.cl original_var = Spilled_var.cl var)
+          in
+          Spilled_var.Tbl.find_opt tbl original_var
+          |> Option.value ~default:Spilled_var.Set.empty
+          |> Spilled_var.Set.union (to_add |> remove_self |> remove_diff_class)
+          |> Spilled_var.Tbl.replace tbl original_var
+        in
+        let update_existing2 (tbl : Unspilled_reg.Set.t Spilled_var.Tbl.t)
+            to_add =
+          let remove_diff_class =
+            Unspilled_reg.Set.filter (fun unspilled ->
+                Spilled_var.cl original_var = Unspilled_reg.cl unspilled)
+          in
+          Spilled_var.Tbl.find_opt tbl original_var
+          |> Option.value ~default:Unspilled_reg.Set.empty
+          |> Unspilled_reg.Set.union (remove_diff_class to_add)
+          |> Spilled_var.Tbl.replace tbl original_var
+        in
+        if Spilled_var.Tbl.mem spilled_map original_var
+        then (
+          update_existing1 spilled_to_spilled_things_crossed
+            spilled_things_from_this_block_live;
+          update_existing2 spilled_to_unspilled_things_crossed
+            unspilled_things_live)
+      in
+      Spilled_var.Set.iter update_live spilled_things_from_this_block_live
   in
-  DLL.iter_cell block.body ~f:update_info_using_inst;
+  DLL.iter_cell block.body ~f:update_live_info_using_inst;
+  assert (Spilled_var.Set.diff to_be_seen !seen |> Spilled_var.Set.is_empty);
   let substitution = Reg.Tbl.create 8 in
   let block_temp_to_var = Block_temporary.Tbl.create 8 in
   Actual_var.Tbl.iter
     (fun var block_temp ->
       Block_temporary.Tbl.add block_temp_to_var block_temp var)
     var_to_block_temp;
-  let make_block_temp var =
+  let make_block_temp original_var =
+    let var = Spilled_var.Tbl.find spilled_map original_var in
     let block_temp = Actual_var.Tbl.find var_to_block_temp var in
     Actual_var.Tbl.find_opt instrs_to_remove var
     |> Option.value ~default:[]
@@ -210,7 +285,8 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
              (Block_temporary.to_reg block_temp))
   in
   let pick_block_temps () =
-    instrs_to_remove |> Actual_var.Tbl.to_seq_keys |> List.of_seq
+    spilled_to_spilled_things_crossed |> Spilled_var.Tbl.to_seq_keys
+    |> List.of_seq
   in
   pick_block_temps () |> List.iter ~f:make_block_temp;
   if Reg.Tbl.length substitution <> 0
