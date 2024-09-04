@@ -1,4 +1,4 @@
-[@@@ocaml.warning "+a-4-30-40-41-42-32-60-27-26"]
+[@@@ocaml.warning "+a-4-30-40-41-42"]
 
 open! Regalloc_utils
 module DLL = Flambda_backend_utils.Doubly_linked_list
@@ -130,9 +130,6 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     in
     Actual_var.Tbl.replace instrs_to_remove var (instr_cell :: existing)
   in
-  let promote_to_block inst_temp =
-    inst_temp |> Inst_temporary.to_reg |> Block_temporary.of_reg
-  in
   let (spilled_map : Actual_var.t Spilled_var.Tbl.t) =
     Spilled_var.Tbl.create 8
   in
@@ -142,10 +139,12 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
         (Spilled_var.of_reg spilled)
         (Actual_var.of_reg actual))
     spilled_map_external;
-  let actual_to_spilled =
-    spilled_map |> Spilled_var.Tbl.to_seq
-    |> Seq.map (fun (k, v) -> v, k)
-    |> Actual_var.Tbl.of_seq
+  let actual_to_spilled = Actual_var.Tbl.create 8 in
+  Spilled_var.Tbl.iter
+    (fun spilled actual -> Actual_var.Tbl.add actual_to_spilled actual spilled)
+    spilled_map;
+  let promote_to_block inst_temp =
+    inst_temp |> Inst_temporary.to_reg |> Block_temporary.of_reg
   in
   let update_info_using_inst (inst_cell : Cfg.basic Cfg.instruction DLL.cell) =
     let inst = DLL.value inst_cell in
@@ -181,6 +180,11 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
     | _ -> ()
   in
   DLL.iter_cell block.body ~f:update_info_using_inst;
+  let spilled_in_this_block =
+    var_to_block_temp |> Actual_var.Tbl.to_seq_keys
+    |> Seq.map (Actual_var.Tbl.find actual_to_spilled)
+    |> Spilled_var.Set.of_seq
+  in
   let (spilled_to_unspilled_things_crossed
         : Unspilled_reg.Set.t Spilled_var.Tbl.t) =
     Spilled_var.Tbl.create 8
@@ -189,12 +193,16 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       =
     Spilled_var.Tbl.create 8
   in
-  let to_be_seen =
-    var_to_block_temp |> Actual_var.Tbl.to_seq_keys
-    |> Seq.map (Actual_var.Tbl.find actual_to_spilled)
-    |> Spilled_var.Set.of_seq
-  in
-  let seen = ref Spilled_var.Set.empty in
+  Spilled_var.Set.iter
+    (fun spilled ->
+      Spilled_var.Tbl.replace spilled_to_unspilled_things_crossed spilled
+        Unspilled_reg.Set.empty)
+    spilled_in_this_block;
+  Spilled_var.Set.iter
+    (fun spilled ->
+      Spilled_var.Tbl.replace spilled_to_spilled_things_crossed spilled
+        Spilled_var.Set.empty)
+    spilled_in_this_block;
   let update_live_info_using_inst
       (inst_cell : Cfg.basic Cfg.instruction DLL.cell) =
     let inst = DLL.value inst_cell in
@@ -208,10 +216,9 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       let spilled_things_live =
         Spilled_var.Set.filter
           (Spilled_var.Tbl.mem spilled_map)
-          (live |> Reg.Set.to_seq |> Seq.map Spilled_var.of_reg
+          (Reg.Set.to_seq live |> Seq.map Spilled_var.of_reg
          |> Spilled_var.Set.of_seq)
       in
-      seen := Spilled_var.Set.union !seen spilled_things_live;
       let spilled_things_from_this_block_live =
         Spilled_var.Set.filter
           (fun (original_var : Spilled_var.t) ->
@@ -264,31 +271,76 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       Spilled_var.Set.iter update_live spilled_things_from_this_block_live
   in
   DLL.iter_cell block.body ~f:update_live_info_using_inst;
-  assert (Spilled_var.Set.diff to_be_seen !seen |> Spilled_var.Set.is_empty);
+  let convert_spilled_to_unspilled (spilled : Spilled_var.t) =
+    (* Spilled_var.Tbl.find_opt spilled_to_spilled_things_crossed spilled |>
+       Option.value ~default:Spilled_var.Set.empty |> Spilled_var.Set.iter (fun
+       spilled_thing_crossed -> Spilled_var.Tbl.find_opt
+       spilled_to_unspilled_things_crossed spilled_thing_crossed |> Option.value
+       ~default:Reg.Set.empty |> Reg.Set.add spilled |> Reg.Tbl.replace
+       spilled_to_unspilled_things_crossed spilled_thing_crossed); *)
+    let unspilled = spilled |> Spilled_var.to_reg |> Unspilled_reg.of_reg in
+    Spilled_var.Tbl.remove spilled_to_unspilled_things_crossed spilled;
+    Spilled_var.Tbl.remove spilled_to_spilled_things_crossed spilled;
+    Spilled_var.Tbl.iter
+      (fun other_spilled spilled_things_crossed ->
+        if Spilled_var.Set.mem spilled spilled_things_crossed
+        then (
+          Spilled_var.Tbl.replace spilled_to_spilled_things_crossed
+            other_spilled
+            (Spilled_var.Set.remove spilled spilled_things_crossed);
+          Spilled_var.Tbl.replace spilled_to_unspilled_things_crossed
+            other_spilled
+            (let existing =
+               Spilled_var.Tbl.find_opt spilled_to_unspilled_things_crossed
+                 other_spilled
+               |> Option.value ~default:Unspilled_reg.Set.empty
+             in
+             Unspilled_reg.Set.add unspilled existing)))
+      spilled_to_spilled_things_crossed
+  in
   let substitution = Reg.Tbl.create 8 in
-  let block_temp_to_var = Block_temporary.Tbl.create 8 in
-  Actual_var.Tbl.iter
-    (fun var block_temp ->
-      Block_temporary.Tbl.add block_temp_to_var block_temp var)
-    var_to_block_temp;
-  let make_block_temp original_var =
-    let var = Spilled_var.Tbl.find spilled_map original_var in
+  let make_block_temp spilled =
+    let var = Spilled_var.Tbl.find spilled_map spilled in
     let block_temp = Actual_var.Tbl.find var_to_block_temp var in
-    Actual_var.Tbl.find_opt instrs_to_remove var
-    |> Option.value ~default:[]
-    |> List.iter ~f:DLL.delete_curr;
     Block_temporary.Tbl.find_opt things_to_replace block_temp
     |> Option.value ~default:[]
     |> List.iter ~f:(fun inst_temp ->
-           Reg.Tbl.replace substitution
+           Reg.Tbl.add substitution
              (Inst_temporary.to_reg inst_temp)
-             (Block_temporary.to_reg block_temp))
+             (Block_temporary.to_reg block_temp));
+    List.iter ~f:DLL.delete_curr
+      (Actual_var.Tbl.find_opt instrs_to_remove var |> Option.value ~default:[])
   in
-  let pick_block_temps () =
-    spilled_to_spilled_things_crossed |> Spilled_var.Tbl.to_seq_keys
-    |> List.of_seq
+  let rec pick_block_temporaries () =
+    let eligible spilled unspilled_things_crossed =
+      Unspilled_reg.Set.cardinal unspilled_things_crossed
+      < Proc.num_available_registers.(Spilled_var.cl spilled) || true
+    in
+    let score spilled_var =
+      Actual_var.Tbl.find_opt instrs_to_remove
+        (Spilled_var.Tbl.find spilled_map spilled_var)
+      |> Option.value ~default:[] |> List.length
+    in
+    let best =
+      Spilled_var.Tbl.fold
+        (fun spilled_var unspilled_things_crossed acc ->
+          if eligible spilled_var unspilled_things_crossed
+          then
+            let curr_score = score spilled_var in
+            match acc with
+            | Some (_, prev_score) when curr_score <= prev_score -> acc
+            | _ -> Some (spilled_var, curr_score)
+          else acc)
+        spilled_to_unspilled_things_crossed None
+    in
+    match best with
+    | Some (spilled, _) ->
+      convert_spilled_to_unspilled spilled;
+      make_block_temp spilled;
+      pick_block_temporaries ()
+    | None -> ()
   in
-  pick_block_temps () |> List.iter ~f:make_block_temp;
+  pick_block_temporaries ();
   if Reg.Tbl.length substitution <> 0
   then (
     Substitution.apply_block_in_place substitution block;
@@ -443,7 +495,7 @@ let rewrite_gen :
                temporary is spilled, stack operands will apply to it in the next
                round in the same way it would have done to the original
                variable. *)
-            if should_coalesce_temp_spills_and_reloads
+            if true
                || Regalloc_stack_operands.basic spilled_map instr
                   = May_still_have_spilled_registers
             then (
@@ -457,7 +509,7 @@ let rewrite_gen :
       then
         (* CR-soon mitom: Same issue as short circuiting in basic instruction
            rewriting *)
-        if should_coalesce_temp_spills_and_reloads
+        if true
            || Regalloc_stack_operands.terminator spilled_map block.terminator
               = May_still_have_spilled_registers
         then (
