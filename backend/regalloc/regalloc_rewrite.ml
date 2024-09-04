@@ -1,4 +1,4 @@
-[@@@ocaml.warning "+a-4-30-40-41-42-32-60-27"]
+[@@@ocaml.warning "+a-4-30-40-41-42-32-60-27-26"]
 
 open! Regalloc_utils
 module DLL = Flambda_backend_utils.Doubly_linked_list
@@ -155,6 +155,40 @@ let coalesce_temp_spills_and_reloads (block : Cfg.basic_block)
       | None -> Actual_var.Tbl.add var_to_block_temp var (promote_to_block temp)
       | Some block_temp -> replace temp block_temp)
     | _ -> ()
+  in
+  let (spilled_map : Actual_var.t Spilled_var.Tbl.t) =
+    Spilled_var.Tbl.create 8
+  in
+  Reg.Tbl.iter
+    (fun spilled actual ->
+      Spilled_var.Tbl.add spilled_map
+        (Spilled_var.of_reg spilled)
+        (Actual_var.of_reg actual))
+    spilled_map_external;
+  let actual_to_spilled =
+    spilled_map |> Spilled_var.Tbl.to_seq
+    |> Seq.map (fun (k, v) -> v, k)
+    |> Actual_var.Tbl.of_seq
+  in
+  let (spilled_to_unspilled_things_crossed
+        : Unspilled_reg.Set.t Spilled_var.Tbl.t) =
+    Spilled_var.Tbl.create 8
+  in
+  let (spilled_to_spilled_things_crossed : Spilled_var.Set.t Spilled_var.Tbl.t)
+      =
+    Spilled_var.Tbl.create 8
+  in
+  let update_live_info_using_inst
+      (inst_cell : Cfg.basic Cfg.instruction DLL.cell) =
+    let inst = DLL.value inst_cell in
+    match inst.desc with
+    | Op Reload | Op Spill -> ()
+    | _ ->
+      let liveness_domain =
+        Cfg_with_infos.liveness_find cfg_with_infos inst.id
+      in
+      let live = Reg.Set.union liveness_domain.before liveness_domain.across in
+      ()
   in
   DLL.iter_cell block.body ~f:update_info_using_inst;
   let substitution = Reg.Tbl.create 8 in
