@@ -52,6 +52,7 @@ module Libloc = struct
   }
 end
 
+type selected_counters = string list option ref
 type profile_column = [ `Time | `Alloc | `Top_heap | `Abs_top_heap | `Counters ]
 type profile_granularity_level = File_level | Function_level | Block_level
 
@@ -159,6 +160,7 @@ let dump_combine = ref false            (* -dcombine *)
 let debug_ocaml = ref false             (* -debug-ocaml *)
 let default_timings_precision  = 3
 let timings_precision = ref default_timings_precision (* -dtimings-precision *)
+let selected_counters : string list option ref = ref None (* -dcounters [counter1, counter2, ...] *)
 let profile_columns : profile_column list ref = ref [] (* -dprofile/-dtimings/-dcounters *)
 let profile_granularity : profile_granularity_level ref = ref File_level (* -dgranularity *)
 

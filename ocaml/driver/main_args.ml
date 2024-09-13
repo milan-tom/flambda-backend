@@ -1044,7 +1044,7 @@ module type Compiler_options = sig
   val _match_context_rows : int -> unit
   val _dtimings : unit -> unit
   val _dtimings_precision : int -> unit
-  val _dcounters : unit -> unit
+  val _dcounters : string list option ref -> unit
   val _dprofile : unit -> unit
   val _dgranularity : string -> unit
   val _dump_into_file : unit -> unit
@@ -2035,7 +2035,7 @@ module Default = struct
     let _dprofile () = profile_columns := Profile.all_columns
     let _dtimings () = profile_columns := [`Time]
     let _dtimings_precision n = timings_precision := n
-    let _dcounters () = profile_columns := [`Counters]
+    let _dcounters counters = profile_columns := [`Counters]; selected_counters := counters
     let _dgranularity = Clflags.set_profile_granularity
     let _dump_into_file = set dump_into_file
     let _dump_into_csv = set dump_into_csv
